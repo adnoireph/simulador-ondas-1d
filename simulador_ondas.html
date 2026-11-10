@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Simulador de transporte de ondas</title>
+<style>
+  :root { --bg:#0B2A3C; --card:#12374D; --ink:#F4F7FA; --muted:#9DB3C0; --teal:#5FD0D8; --amber:#F2A93B; --red:#FF7A6B; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font-family:system-ui,-apple-system,"Segoe UI",Arial,sans-serif; }
+  main { max-width:780px; margin:0 auto; padding:20px 16px 32px; }
+  h1 { font-size:1.5rem; margin:0 0 4px; }
+  .sub { color:var(--muted); margin:0 0 16px; font-size:.95rem; }
+  .eq { font-family:ui-monospace,Consolas,monospace; background:var(--card); padding:8px 12px; border-radius:8px; display:inline-block; margin:0 0 14px; font-size:.95rem; }
+  .card { background:var(--card); border-radius:12px; padding:14px; margin-bottom:14px; }
+  canvas { width:100%; height:300px; display:block; border-radius:8px; background:#0E3248; touch-action:none; }
+  .stats { display:flex; flex-wrap:wrap; gap:8px; margin:10px 0 0; }
+  .chip { background:#0E3248; border-radius:999px; padding:6px 12px; font-size:.85rem; font-variant-numeric:tabular-nums; }
+  .chip b { color:var(--teal); }
+  #estado.ok { color:var(--teal); } #estado.warn { color:var(--amber); } #estado.bad { color:var(--red); }
+  .row { display:grid; grid-template-columns:1fr 1fr; gap:12px 16px; }
+  label { display:block; font-size:.85rem; color:var(--muted); margin-bottom:4px; }
+  label output { color:var(--ink); float:right; font-family:ui-monospace,Consolas,monospace; }
+  input[type=range] { width:100%; accent-color:var(--teal); }
+  .btns { display:flex; flex-wrap:wrap; gap:8px; margin-top:12px; }
+  button { background:#0E3248; color:var(--ink); border:1px solid #2A5670; border-radius:8px; padding:9px 14px; font-size:.9rem; cursor:pointer; }
+  button:hover { border-color:var(--teal); }
+  button.primary { background:var(--teal); color:#06222F; border-color:var(--teal); font-weight:600; }
+  .legend { color:var(--muted); font-size:.8rem; margin-top:8px; }
+  .legend i { display:inline-block; width:18px; height:0; border-top:3px solid var(--teal); vertical-align:middle; margin:0 4px 0 0; }
+  .legend i.d { border-top:2px dashed var(--muted); margin-left:12px; }
+  p.note { color:var(--muted); font-size:.85rem; line-height:1.5; }
+  @media (max-width:520px) { .row { grid-template-columns:1fr; } canvas { height:240px; } }
+</style>
+</head>
+<body>
+<main>
+  <h1>Simulador de transporte de ondas</h1>
+  <p class="sub">Ecuación de onda 1D resuelta con diferencias finitas (salto de rana).</p>
+  <div class="eq">u<sub>tt</sub> = c² u<sub>xx</sub> &nbsp;·&nbsp; r = c·Δt/Δx</div>
+
+  <div class="card">
+    <canvas id="cv" aria-label="Gráfica de u(x,t): solución numérica y exacta"></canvas>
+    <div class="legend"><i></i>numérica<i class="d"></i>exacta (d’Alembert) · toca la gráfica para mover el pulso</div>
+    <div class="stats">
+      <span class="chip">t = <b id="t">0.00</b></span>
+      <span class="chip">error RMS = <b id="err">0</b></span>
+      <span class="chip">estado: <b id="estado" class="ok">estable</b></span>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="row">
+      <div><label for="r">r = c·Δt/Δx <output id="rv"></output></label>
+        <input id="r" type="range" min="0.2" max="1.2" step="0.01" value="1"></div>
+      <div><label for="c">velocidad c <output id="cv2"></output></label>
+        <input id="c" type="range" min="0.5" max="2" step="0.1" value="1"></div>
+      <div><label for="s">ancho del pulso σ <output id="sv"></output></label>
+        <input id="s" type="range" min="0.2" max="1" step="0.05" value="0.4"></div>
+      <div><label for="v">velocidad de animación <output id="vv"></output></label>
+        <input id="v" type="range" min="0.25" max="3" step="0.25" value="1"></div>
+    </div>
+    <div class="btns">
+      <button id="play" class="primary">Pausar</button>
+      <button id="reset">Reiniciar</button>
+      <button data-r="0.5">r = 0.5</button>
+      <button data-r="1">r = 1 (exacto)</button>
+      <button data-r="1.05">r = 1.05 (inestable)</button>
+    </div>
+  </div>
+
+  <p class="note">
+    Con r = 1 el esquema reproduce la solución exacta. Con r &lt; 1 aparece un pequeño error numérico (dispersión).
+    Con r &gt; 1 se viola la condición CFL: el error de redondeo se amplifica en cada paso y la simulación se vuelve inestable.
+    Los extremos del dominio están fijos, así que el pulso se refleja.
+  </p>
+</main>
+
+<script>
+(function () {
+  const L = 10, dx = 0.05, N = Math.round(L / dx) + 1, X0 = L / 2;
+  const YMIN = -0.4, YMAX = 1.1;
+  const $ = id => document.getElementById(id);
+  const cv = $('cv'), ctx = cv.getContext('2d');
+  const S = { r: 1, c: 1, sigma: 0.4, speed: 1, x0: X0, running: true };
+  let up, u, un, t, dt, unstable;
+
+  const f = s => Math.exp(-Math.pow((s - S.x0) / S.sigma, 2));
+  // extensión impar y periódica (2L) para extremos fijos
+  const F = s => { const q = (((s + L) % (2 * L)) + 2 * L) % (2 * L) - L; return q >= 0 ? f(q) : -f(-q); };
+  const exact = (x, tt) => 0.5 * (F(x - S.c * tt) + F(x + S.c * tt));
+
+  function reset() {
+    dt = S.r * dx / S.c;
+    up = new Float64Array(N); u = new Float64Array(N); un = new Float64Array(N);
+    for (let i = 0; i < N; i++) up[i] = f(i * dx) + 1e-10 * (Math.random() - 0.5); // ruido tipo redondeo
+    up[0] = up[N - 1] = 0;
+    const r2 = S.r * S.r;
+    for (let i = 1; i < N - 1; i++) u[i] = up[i] + 0.5 * r2 * (up[i + 1] - 2 * up[i] + up[i - 1]);
+    t = dt; unstable = false;
+    setEstado();
+  }
+
+  function step() {
+    const r2 = S.r * S.r;
+    for (let i = 1; i < N - 1; i++) un[i] = 2 * u[i] - up[i] + r2 * (u[i + 1] - 2 * u[i] + u[i - 1]);
+    un[0] = un[N - 1] = 0;
+    const tmp = up; up = u; u = un; un = tmp;
+    t += dt;
+  }
+
+  function rms() {
+    let s = 0;
+    for (let i = 0; i < N; i++) { const d = u[i] - exact(i * dx, t); s += d * d; }
+    return Math.sqrt(s / N);
+  }
+
+  function setEstado() {
+    const e = $('estado');
+    if (unstable) { e.textContent = 'inestable'; e.className = 'bad'; }
+    else if (S.r > 1) { e.textContent = 'r > 1 (CFL violada)'; e.className = 'warn'; }
+    else if (Math.abs(S.r - 1) < 1e-9) { e.textContent = 'exacto'; e.className = 'ok'; }
+    else { e.textContent = 'estable'; e.className = 'ok'; }
+  }
+
+  function fit() {
+    const dpr = window.devicePixelRatio || 1, w = cv.clientWidth, h = cv.clientHeight;
+    cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+
+  function draw() {
+    const w = cv.clientWidth, h = cv.clientHeight, pl = 36, pr = 10, pt = 10, pb = 24;
+    const px = x => pl + (x / L) * (w - pl - pr);
+    const py = y => pt + (YMAX - Math.max(YMIN, Math.min(YMAX, y))) / (YMAX - YMIN) * (h - pt - pb);
+    ctx.clearRect(0, 0, w, h);
+    ctx.font = '11px system-ui, sans-serif'; ctx.fillStyle = '#9DB3C0'; ctx.strokeStyle = '#1F4B63'; ctx.lineWidth = 1;
+    for (const yv of [0, 0.5, 1]) { ctx.beginPath(); ctx.moveTo(pl, py(yv)); ctx.lineTo(w - pr, py(yv)); ctx.stroke(); ctx.fillText(yv.toFixed(1), 6, py(yv) + 4); }
+    for (let xv = 0; xv <= L; xv += 2) { ctx.fillText(xv, px(xv) - 3, h - 8); }
+    // exacta
+    ctx.setLineDash([6, 5]); ctx.strokeStyle = '#9DB3C0'; ctx.lineWidth = 1.5; ctx.beginPath();
+    for (let i = 0; i < N; i++) { const x = i * dx, y = exact(x, t); i ? ctx.lineTo(px(x), py(y)) : ctx.moveTo(px(x), py(y)); }
+    ctx.stroke(); ctx.setLineDash([]);
+    // numérica
+    ctx.strokeStyle = unstable || S.r > 1 ? '#F2A93B' : '#5FD0D8'; ctx.lineWidth = 2.5; ctx.beginPath();
+    for (let i = 0; i < N; i++) { const x = i * dx; i ? ctx.lineTo(px(x), py(u[i])) : ctx.moveTo(px(x), py(u[i])); }
+    ctx.stroke();
+    $('t').textContent = t.toFixed(2);
+    const e = rms();
+    $('err').textContent = (isFinite(e) && e < 1e3) ? e.toExponential(1) : '> 1e3';
+  }
+
+  function frame() {
+    if (S.running && !unstable) {
+      const n = Math.max(1, Math.round(0.04 * S.speed / dt));
+      for (let k = 0; k < n; k++) {
+        step();
+        if (!(Math.abs(u[(N / 2) | 0]) < 1e6)) { unstable = true; break; }
+      }
+      let mx = 0; for (let i = 0; i < N; i++) mx = Math.max(mx, Math.abs(u[i]));
+      if (mx > 1e3 || !isFinite(mx)) unstable = true;
+      if (unstable) { setEstado(); $('play').textContent = 'Reanudar'; }
+    }
+    draw();
+    requestAnimationFrame(frame);
+  }
+
+  // controles
+  const bind = (id, key, out, fmt, resets) => {
+    const el = $(id), o = $(out);
+    const upd = () => { S[key] = parseFloat(el.value); o.textContent = fmt(S[key]); if (resets) reset(); };
+    el.addEventListener('input', upd); upd();
+    return el;
+  };
+  const rEl = bind('r', 'r', 'rv', v => v.toFixed(2), false);
+  bind('c', 'c', 'cv2', v => v.toFixed(1), false);
+  bind('s', 'sigma', 'sv', v => v.toFixed(2), false);
+  bind('v', 'speed', 'vv', v => v.toFixed(2) + '×', false);
+  ['r', 'c', 's'].forEach(id => $(id).addEventListener('input', reset));
+
+  $('play').addEventListener('click', () => {
+    if (unstable) { reset(); S.running = true; } else { S.running = !S.running; }
+    $('play').textContent = S.running ? 'Pausar' : 'Reanudar';
+  });
+  $('reset').addEventListener('click', () => { S.running = true; $('play').textContent = 'Pausar'; reset(); });
+  document.querySelectorAll('button[data-r]').forEach(b => b.addEventListener('click', () => {
+    rEl.value = b.dataset.r; S.r = parseFloat(b.dataset.r); $('rv').textContent = S.r.toFixed(2);
+    S.running = true; $('play').textContent = 'Pausar'; reset();
+  }));
+  // tocar la gráfica mueve el pulso
+  const moveFromEvent = ev => {
+    const rect = cv.getBoundingClientRect(), pl = 36, pr = 10;
+    const x = ((ev.clientX - rect.left) - pl) / (rect.width - pl - pr) * L;
+    S.x0 = Math.max(1.5, Math.min(L - 1.5, x)); reset();
+  };
+  cv.addEventListener('pointerdown', moveFromEvent);
+
+  window.addEventListener('resize', fit);
+  fit(); reset(); requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
