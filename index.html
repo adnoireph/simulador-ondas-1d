@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Simulador de Transporte de Ondas 1D</title>
+    <style>
+        body { 
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
+            text-align: center; 
+            background-color: #f4f7f6; 
+            color: #333; 
+            margin: 0;
+            padding: 20px;
+        }
+        h2 { color: #003366; }
+        p { color: #555; font-size: 14px; margin-bottom: 20px;}
+        canvas { 
+            background: white; 
+            border: 2px solid #0056b3; 
+            border-radius: 8px; 
+            box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+            max-width: 100%; 
+            height: auto;
+        }
+        .controls { 
+            margin: 0 auto 20px auto; 
+            padding: 20px; 
+            background: white; 
+            border-radius: 8px; 
+            display: inline-block; 
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1); 
+            text-align: left;
+        }
+        label { font-weight: bold; font-size: 16px; color: #003366;}
+        span#rValue { color: #e65100; font-size: 18px; }
+        input[type=range] { 
+            width: 100%; 
+            margin: 15px 0; 
+        }
+        button { 
+            background-color: #0056b3; 
+            color: white; 
+            border: none; 
+            padding: 10px 20px; 
+            cursor: pointer; 
+            border-radius: 5px; 
+            font-size: 16px; 
+            width: 100%;
+            transition: background 0.3s;
+        }
+        button:hover { background-color: #003d82; }
+    </style>
+</head>
+<body>
+    <h2>Simulador Interactivo: Ecuación de Onda 1D</h2>
+    <p>Esquema de Diferencias Finitas (Salto de Rana)</p>
+    
+    <div class="controls">
+        <label for="rSlider">Parámetro de Courant (r = c·Δt/Δx): <span id="rValue">1.00</span></label><br>
+        <input type="range" id="rSlider" min="0.5" max="1.06" step="0.01" value="1.00"><br>
+        <button onclick="resetSimulation()">Lanzar Pulso Gaussiano</button>
+    </div>
+    <br>
+    <canvas id="waveCanvas" width="800" height="350"></canvas>
+
+    <script>
+        const canvas = document.getElementById('waveCanvas');
+        const ctx = canvas.getContext('2d');
+        const rSlider = document.getElementById('rSlider');
+        const rValue = document.getElementById('rValue');
+
+        let nx = 300; // Puntos espaciales
+        let dx = 10 / nx;
+        let u = new Array(nx).fill(0);
+        let u_prev = new Array(nx).fill(0);
+        let u_next = new Array(nx).fill(0);
+        let r = parseFloat(rSlider.value);
+        let animationId;
+        let frameCount = 0;
+
+        // Pulso gaussiano inicial
+        function gaussian(x) {
+            return Math.exp(-Math.pow(x - 2, 2) / 0.3);
+        }
+
+        function initWave() {
+            frameCount = 0;
+            for (let i = 0; i < nx; i++) {
+                let x = i * dx;
+                u_prev[i] = gaussian(x);
+                // Primera iteración basada en d'Alembert para iniciar el movimiento hacia la derecha
+                u[i] = gaussian(x - r * dx); 
+            }
+        }
+
+        function draw() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            
+            // Dibujar línea de reposo (eje X)
+            ctx.strokeStyle = '#cccccc';
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(0, canvas.height / 2);
+            ctx.lineTo(canvas.width, canvas.height / 2);
+            ctx.stroke();
+
+            // Dibujar la onda
+            ctx.strokeStyle = '#0056b3';
+            ctx.lineWidth = 3;
+            ctx.beginPath();
+            for (let i = 0; i < nx; i++) {
+                let xCanvas = (i / nx) * canvas.width;
+                // Escalar la amplitud para que se vea bien en el canvas
+                let yCanvas = canvas.height / 2 - u[i] * (canvas.height / 3);
+                
+                if (i === 0) ctx.moveTo(xCanvas, yCanvas);
+                else ctx.lineTo(xCanvas, yCanvas);
+            }
+            ctx.stroke();
+        }
+
+        function step() {
+            // Esquema Salto de Rana (Leapfrog)
+            for (let i = 1; i < nx - 1; i++) {
+                u_next[i] = 2 * u[i] - u_prev[i] + (r * r) * (u[i+1] - 2 * u[i] + u[i-1]);
+            }
+            
+            // Condiciones de frontera absorbentes/fijas
+            u_next[0] = 0;
+            u_next[nx - 1] = 0;
+
+            // Actualizar el tiempo
+            for (let i = 0; i < nx; i++) {
+                u_prev[i] = u[i];
+                u[i] = u_next[i];
+            }
+        }
+
+        function animate() {
+            // Ralentizar la animación para que se aprecie mejor en pantalla
+            if (frameCount % 2 === 0) { 
+                step();
+            }
+            draw();
+            frameCount++;
+            
+            // Detección de inestabilidad (cuando el esquema colapsa)
+            let maxU = Math.max(...u.map(Math.abs));
+            if (maxU > 3) {
+                ctx.fillStyle = 'rgba(255, 0, 0, 0.8)';
+                ctx.font = 'bold 28px Tahoma';
+                ctx.textAlign = 'center';
+                ctx.fillText('¡INESTABILIDAD NUMÉRICA!', canvas.width/2, canvas.height/2 - 20);
+                ctx.font = '18px Tahoma';
+                ctx.fillText('La condición Courant-Friedrichs-Lewy se ha roto.', canvas.width/2, canvas.height/2 + 20);
+                return; // Cortar el ciclo de animación
+            }
+
+            // Reiniciar si la onda sale del dominio derecho
+            if (u[nx - 10] > 0.05) {
+                initWave();
+            }
+
+            animationId = requestAnimationFrame(animate);
+        }
+
+        function resetSimulation() {
+            cancelAnimationFrame(animationId);
+            r = parseFloat(rSlider.value);
+            initWave();
+            animate();
+        }
+
+        // Listeners para interactividad en tiempo real
+        rSlider.addEventListener('input', function() {
+            rValue.textContent = parseFloat(this.value).toFixed(2);
+        });
+        rSlider.addEventListener('change', resetSimulation);
+
+        // Arranque inicial
+        resetSimulation();
+    </script>
+</body>
+</html>
